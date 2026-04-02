@@ -1,42 +1,46 @@
-// Maps pose data to Tetris game actions
+// Maps right-hand gestures to Tetris game actions
 
 class GameControls {
-    constructor(poseDetector, game) {
-        this.pose = poseDetector;
+    constructor(handDetector, game) {
+        this.hand = handDetector;
         this.game = game;
 
-        // Smoothing buffers
-        this.xHistory = [];
-        this.smoothingWindow = 5;
-
         // Gesture cooldowns (ms)
-        this.rotateLeftCooldown = 0;
-        this.rotateRightCooldown = 0;
+        this.moveCooldown = 0;
+        this.rotateCooldown = 0;
         this.dropCooldown = 0;
-        this.COOLDOWN_TIME = 500;
+        this.MOVE_COOLDOWN_TIME = 200;
+        this.ROTATE_COOLDOWN_TIME = 400;
+        this.DROP_COOLDOWN_TIME = 800;
 
-        // Gesture state tracking
-        this.leftHandWasRaised = false;
-        this.rightHandWasRaised = false;
-        this.handsWerePushedDown = false;
+        // Previous frame state for velocity/delta detection
+        this.prevWristX = null;
+        this.prevWristY = null;
+        this.prevHandAngle = null;
 
-        // Raise both hands to start/restart
-        this.bothHandsRaisedTimer = 0;
-        this.HANDS_RAISED_DURATION = 1000; // hold for 1 second
+        // Thresholds
+        this.SWIPE_X_THRESHOLD = 0.04;   // horizontal swipe sensitivity
+        this.SWIPE_Y_THRESHOLD = 0.06;   // downward swipe sensitivity
+        this.ROTATE_THRESHOLD = 0.35;     // radians (~20 degrees)
 
-        // Move speed limiter
-        this.lastMoveTime = 0;
-        this.MOVE_INTERVAL = 80; // ms between moves
+        // Start gesture
+        this.handDetectedTimer = 0;
+        this.HAND_DETECTED_DURATION = 1500; // hold hand visible for 1.5s to start
+
+        this._lastTimestamp = 0;
     }
 
     update(timestamp) {
-        if (!this.pose.isDetecting()) return;
+        if (!this.hand.isDetecting()) {
+            this._resetState();
+            return;
+        }
 
         // Decrease cooldowns
         const dt = timestamp - (this._lastTimestamp || timestamp);
         this._lastTimestamp = timestamp;
-        this.rotateLeftCooldown = Math.max(0, this.rotateLeftCooldown - dt);
-        this.rotateRightCooldown = Math.max(0, this.rotateRightCooldown - dt);
+        this.moveCooldown = Math.max(0, this.moveCooldown - dt);
+        this.rotateCooldown = Math.max(0, this.rotateCooldown - dt);
         this.dropCooldown = Math.max(0, this.dropCooldown - dt);
 
         if (this.game.state === 'start' || this.game.state === 'gameover') {
@@ -46,106 +50,85 @@ class GameControls {
 
         if (this.game.state !== 'playing') return;
 
-        this._updateMovement(timestamp);
-        this._checkRotation();
-        this._checkDrop();
+        const wrist = this.hand.getWrist();
+        const angle = this.hand.getHandAngle();
+        if (!wrist) return;
+
+        this._checkSwipeLeftRight(wrist);
+        this._checkSwipeDown(wrist);
+        this._checkRotation(angle);
+
+        // Update previous state
+        this.prevWristX = wrist.x;
+        this.prevWristY = wrist.y;
+        this.prevHandAngle = angle;
     }
 
-    _smoothX(rawX) {
-        this.xHistory.push(rawX);
-        if (this.xHistory.length > this.smoothingWindow) {
-            this.xHistory.shift();
+    _resetState() {
+        this.prevWristX = null;
+        this.prevWristY = null;
+        this.prevHandAngle = null;
+        this.handDetectedTimer = 0;
+    }
+
+    _checkSwipeLeftRight(wrist) {
+        if (this.prevWristX === null || this.moveCooldown > 0) return;
+
+        const deltaX = wrist.x - this.prevWristX;
+
+        // MediaPipe X is mirrored: negative deltaX = hand moved right on screen
+        if (deltaX < -this.SWIPE_X_THRESHOLD) {
+            this.game.moveRight();
+            this.moveCooldown = this.MOVE_COOLDOWN_TIME;
+        } else if (deltaX > this.SWIPE_X_THRESHOLD) {
+            this.game.moveLeft();
+            this.moveCooldown = this.MOVE_COOLDOWN_TIME;
         }
-        const sum = this.xHistory.reduce((a, b) => a + b, 0);
-        return sum / this.xHistory.length;
     }
 
-    _updateMovement(timestamp) {
-        if (timestamp - this.lastMoveTime < this.MOVE_INTERVAL) return;
+    _checkSwipeDown(wrist) {
+        if (this.prevWristY === null || this.dropCooldown > 0) return;
 
-        // Use the average X of both wrists for horizontal control
-        const lw = this.pose.getLeftWrist();
-        const rw = this.pose.getRightWrist();
-        if (!lw || !rw) return;
+        const deltaY = wrist.y - this.prevWristY;
 
-        // MediaPipe x is mirrored (0=right side of screen, 1=left side)
-        // Average both wrists for more stable control
-        const avgX = (lw.x + rw.x) / 2;
-        const smoothedX = this._smoothX(avgX);
-
-        // Map to grid column (mirrored: low x = right side = high column)
-        const targetCol = Math.round((1 - smoothedX) * (COLS - 1));
-        this.game.moveTo(targetCol);
-        this.lastMoveTime = timestamp;
-    }
-
-    _checkRotation() {
-        const lw = this.pose.getLeftWrist();
-        const rw = this.pose.getRightWrist();
-        const ls = this.pose.getLeftShoulder();
-        const rs = this.pose.getRightShoulder();
-        if (!lw || !rw || !ls || !rs) return;
-
-        // Left hand raised above left shoulder = rotate left
-        const leftRaised = lw.y < ls.y - 0.15;
-        // Right hand raised above right shoulder = rotate right
-        const rightRaised = rw.y < rs.y - 0.15;
-
-        // Trigger on transition from not-raised to raised
-        if (leftRaised && !this.leftHandWasRaised && this.rotateLeftCooldown <= 0) {
-            this.game.rotateLeft();
-            this.rotateLeftCooldown = this.COOLDOWN_TIME;
-        }
-
-        if (rightRaised && !this.rightHandWasRaised && this.rotateRightCooldown <= 0) {
-            this.game.rotateRight();
-            this.rotateRightCooldown = this.COOLDOWN_TIME;
-        }
-
-        this.leftHandWasRaised = leftRaised;
-        this.rightHandWasRaised = rightRaised;
-    }
-
-    _checkDrop() {
-        const lw = this.pose.getLeftWrist();
-        const rw = this.pose.getRightWrist();
-        const lh = this.pose.getLeftHip();
-        const rh = this.pose.getRightHip();
-        if (!lw || !rw || !lh || !rh) return;
-
-        // Both wrists below hips = hard drop
-        const bothBelow = lw.y > lh.y + 0.05 && rw.y > rh.y + 0.05;
-
-        if (bothBelow && !this.handsWerePushedDown && this.dropCooldown <= 0) {
+        // Positive deltaY = hand moving down
+        if (deltaY > this.SWIPE_Y_THRESHOLD) {
             this.game.hardDrop();
-            this.dropCooldown = this.COOLDOWN_TIME * 1.5;
+            this.dropCooldown = this.DROP_COOLDOWN_TIME;
         }
+    }
 
-        this.handsWerePushedDown = bothBelow;
+    _checkRotation(angle) {
+        if (this.prevHandAngle === null || angle === null || this.rotateCooldown > 0) return;
+
+        let deltaAngle = angle - this.prevHandAngle;
+
+        // Normalize to [-π, π]
+        if (deltaAngle > Math.PI) deltaAngle -= 2 * Math.PI;
+        if (deltaAngle < -Math.PI) deltaAngle += 2 * Math.PI;
+
+        // Mirrored camera: positive delta = counter-clockwise on screen = rotate left
+        if (deltaAngle > this.ROTATE_THRESHOLD) {
+            this.game.rotateLeft();
+            this.rotateCooldown = this.ROTATE_COOLDOWN_TIME;
+        } else if (deltaAngle < -this.ROTATE_THRESHOLD) {
+            this.game.rotateRight();
+            this.rotateCooldown = this.ROTATE_COOLDOWN_TIME;
+        }
     }
 
     _checkStartGesture(timestamp) {
-        const lw = this.pose.getLeftWrist();
-        const rw = this.pose.getRightWrist();
-        const ls = this.pose.getLeftShoulder();
-        const rs = this.pose.getRightShoulder();
-        if (!lw || !rw || !ls || !rs) {
-            this.bothHandsRaisedTimer = 0;
-            return;
-        }
-
-        const bothRaised = lw.y < ls.y - 0.15 && rw.y < rs.y - 0.15;
-
-        if (bothRaised) {
-            if (this.bothHandsRaisedTimer === 0) {
-                this.bothHandsRaisedTimer = timestamp;
-            } else if (timestamp - this.bothHandsRaisedTimer >= this.HANDS_RAISED_DURATION) {
+        // Just show hand for 1.5 seconds to start
+        if (this.hand.isDetecting()) {
+            if (this.handDetectedTimer === 0) {
+                this.handDetectedTimer = timestamp;
+            } else if (timestamp - this.handDetectedTimer >= this.HAND_DETECTED_DURATION) {
                 this.game.start();
-                this.bothHandsRaisedTimer = 0;
-                this.xHistory = [];
+                this.handDetectedTimer = 0;
+                this._resetState();
             }
         } else {
-            this.bothHandsRaisedTimer = 0;
+            this.handDetectedTimer = 0;
         }
     }
 }

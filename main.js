@@ -5,9 +5,9 @@
     const video = document.getElementById('webcam');
 
     const game = new TetrisGame();
-    const poseDetector = new PoseDetector();
+    const handDetector = new HandDetector();
     const renderer = new GameRenderer(canvas, video);
-    const controls = new GameControls(poseDetector, game);
+    const controls = new GameControls(handDetector, game);
 
     // Also allow keyboard controls for testing
     document.addEventListener('keydown', (e) => {
@@ -30,7 +30,7 @@
     function loop(timestamp) {
         controls.update(timestamp);
         game.update(timestamp);
-        renderer.render(game, poseDetector);
+        renderer.render(game, handDetector);
         requestAnimationFrame(loop);
     }
 
@@ -39,7 +39,7 @@
 
     // Initialize pose detection
     try {
-        await poseDetector.init(video);
+        await handDetector.init(video);
         console.log('Pose detection initialized');
     } catch (err) {
         console.error('Failed to initialize pose detection:', err);

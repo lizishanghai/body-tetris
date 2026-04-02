@@ -32,7 +32,7 @@ class GameRenderer {
         this.gridOffsetY = Math.floor((this.canvas.height - this.gridHeight) / 2);
     }
 
-    render(game, poseDetector) {
+    render(game, handDetector) {
         const ctx = this.ctx;
         const w = this.canvas.width;
         const h = this.canvas.height;
@@ -48,9 +48,9 @@ class GameRenderer {
         ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
         ctx.fillRect(0, 0, w, h);
 
-        // Draw pose skeleton
-        if (poseDetector.isDetecting()) {
-            this._drawSkeleton(poseDetector.landmarks);
+        // Draw hand landmarks
+        if (handDetector.isDetecting()) {
+            this._drawHand(handDetector.landmarks, handDetector.getHandAngle());
         }
 
         // Draw game grid background
@@ -105,9 +105,9 @@ class GameRenderer {
 
         // Draw state overlays
         if (game.state === 'start') {
-            this._drawOverlay('BODY TETRIS', 'Raise both hands to start', poseDetector);
+            this._drawOverlay('HAND TETRIS', 'Show your right hand to start', handDetector);
         } else if (game.state === 'gameover') {
-            this._drawOverlay('GAME OVER', `Score: ${game.score} | Raise both hands to restart`, poseDetector);
+            this._drawOverlay('GAME OVER', `Score: ${game.score} | Show hand to restart`, handDetector);
         }
 
         // Draw control labels at bottom
@@ -195,29 +195,29 @@ class GameRenderer {
         ctx.fillText(`LINES: ${game.linesCleared}`, nextX, nextY + this.cellSize * 4 + 30);
     }
 
-    _drawSkeleton(landmarks) {
+    _drawHand(landmarks, angle) {
         if (!landmarks) return;
         const ctx = this.ctx;
         const w = this.canvas.width;
         const h = this.canvas.height;
 
-        // Connections for upper body
+        // Hand connections (finger chains)
         const connections = [
-            [11, 12], // shoulders
-            [11, 13], [13, 15], // left arm
-            [12, 14], [14, 16], // right arm
-            [11, 23], [12, 24], // torso sides
-            [23, 24], // hips
+            [0, 1], [1, 2], [2, 3], [3, 4],       // thumb
+            [0, 5], [5, 6], [6, 7], [7, 8],       // index
+            [0, 9], [9, 10], [10, 11], [11, 12],  // middle
+            [0, 13], [13, 14], [14, 15], [15, 16], // ring
+            [0, 17], [17, 18], [18, 19], [19, 20], // pinky
+            [5, 9], [9, 13], [13, 17]              // palm
         ];
 
         ctx.strokeStyle = 'rgba(0, 255, 255, 0.6)';
-        ctx.lineWidth = 3;
+        ctx.lineWidth = 2;
 
         for (const [a, b] of connections) {
             const la = landmarks[a];
             const lb = landmarks[b];
-            if (la && lb && la.visibility > 0.5 && lb.visibility > 0.5) {
-                // Mirror X
+            if (la && lb) {
                 ctx.beginPath();
                 ctx.moveTo(w - la.x * w, la.y * h);
                 ctx.lineTo(w - lb.x * w, lb.y * h);
@@ -225,22 +225,49 @@ class GameRenderer {
             }
         }
 
-        // Draw key points
-        const keyPoints = [11, 12, 13, 14, 15, 16, 23, 24];
-        for (const idx of keyPoints) {
-            const lm = landmarks[idx];
-            if (lm && lm.visibility > 0.5) {
-                ctx.fillStyle = idx === 15 || idx === 16
-                    ? 'rgba(255, 255, 0, 0.8)'  // wrists in yellow
-                    : 'rgba(0, 255, 255, 0.8)';
-                ctx.beginPath();
-                ctx.arc(w - lm.x * w, lm.y * h, 6, 0, Math.PI * 2);
-                ctx.fill();
-            }
+        // Draw all 21 landmarks
+        for (let i = 0; i < landmarks.length; i++) {
+            const lm = landmarks[i];
+            if (!lm) continue;
+            const isWrist = i === 0;
+            const isTip = [4, 8, 12, 16, 20].includes(i);
+            ctx.fillStyle = isWrist
+                ? 'rgba(255, 255, 0, 0.9)'
+                : isTip
+                    ? 'rgba(255, 100, 100, 0.8)'
+                    : 'rgba(0, 255, 255, 0.7)';
+            ctx.beginPath();
+            ctx.arc(w - lm.x * w, lm.y * h, isWrist ? 8 : 4, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        // Draw hand angle indicator from wrist
+        if (angle !== null) {
+            const wrist = landmarks[0];
+            const wx = w - wrist.x * w;
+            const wy = wrist.y * h;
+            const indicatorLen = 40;
+            // Mirror the angle for display
+            const displayAngle = Math.PI - angle;
+            const ex = wx + Math.cos(displayAngle) * indicatorLen;
+            const ey = wy - Math.sin(displayAngle) * indicatorLen;
+
+            ctx.strokeStyle = 'rgba(255, 255, 0, 0.8)';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.moveTo(wx, wy);
+            ctx.lineTo(ex, ey);
+            ctx.stroke();
+
+            // Arrow head
+            ctx.fillStyle = 'rgba(255, 255, 0, 0.8)';
+            ctx.beginPath();
+            ctx.arc(ex, ey, 5, 0, Math.PI * 2);
+            ctx.fill();
         }
     }
 
-    _drawOverlay(title, subtitle, poseDetector) {
+    _drawOverlay(title, subtitle, handDetector) {
         const ctx = this.ctx;
         const w = this.canvas.width;
         const h = this.canvas.height;
@@ -257,14 +284,14 @@ class GameRenderer {
         ctx.font = '20px monospace';
         ctx.fillText(subtitle, w / 2, h / 2 + 20);
 
-        if (!poseDetector.isDetecting()) {
+        if (!handDetector.isDetecting()) {
             ctx.fillStyle = '#ff6666';
             ctx.font = '16px monospace';
-            ctx.fillText('Waiting for camera...', w / 2, h / 2 + 60);
+            ctx.fillText('Waiting for hand...', w / 2, h / 2 + 60);
         } else {
             ctx.fillStyle = '#66ff66';
             ctx.font = '16px monospace';
-            ctx.fillText('Body detected!', w / 2, h / 2 + 60);
+            ctx.fillText('Hand detected!', w / 2, h / 2 + 60);
         }
     }
 
@@ -272,15 +299,15 @@ class GameRenderer {
         const ctx = this.ctx;
         const y = this.gridOffsetY + this.gridHeight + 30;
         const centerX = this.canvas.width / 2;
-        const spacing = 120;
+        const spacing = 140;
 
         ctx.font = 'bold 14px monospace';
         ctx.textAlign = 'center';
 
         const labels = [
-            { text: '[ROT_L]', x: centerX - spacing, desc: 'Raise Left Hand' },
-            { text: '[DROP]', x: centerX, desc: 'Push Hands Down' },
-            { text: '[ROT_R]', x: centerX + spacing, desc: 'Raise Right Hand' }
+            { text: '[MOVE]', x: centerX - spacing, desc: 'Swipe Left/Right' },
+            { text: '[DROP]', x: centerX, desc: 'Swipe Down' },
+            { text: '[ROTATE]', x: centerX + spacing, desc: 'Twist Hand' }
         ];
 
         for (const label of labels) {
